@@ -1,0 +1,7 @@
+flask
+flask-cors
+requests
+telebot
+pymongo
+dnspython
+python-dotenv

