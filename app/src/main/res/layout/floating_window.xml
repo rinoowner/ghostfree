@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root_container"
+    android:layout_width="300dp"
+    android:layout_height="wrap_content"
+    android:background="@android:color/transparent">
+
+    <!-- Minimized Layout -->
+    <LinearLayout
+        android:id="@+id/minimized_layout"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:background="@drawable/floating_logo_bg"
+        android:gravity="center"
+        android:clipToOutline="true"
+        android:visibility="gone">
+        
+        <ImageView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:src="@drawable/floating_logo"
+            android:scaleType="centerCrop" />
+    </LinearLayout>
+
+    <!-- Expanded Content Layout -->
+    <LinearLayout
+        android:id="@+id/content_layout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="@drawable/floating_bg"
+        android:padding="16dp">
+
+        <!-- Header -->
+        <RelativeLayout
+            android:id="@+id/header_layout"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:id="@+id/float_status_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="SEARCHING..."
+                android:textColor="#ff5540"
+                android:textSize="12sp"
+                android:fontFamily="monospace" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_below="@id/float_status_text"
+                android:text="GHOST X SERVER"
+                android:textColor="#e0e2ec"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <ImageView
+                android:id="@+id/close_button"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_alignParentEnd="true"
+                android:layout_centerVertical="true"
+                android:src="@android:drawable/ic_menu_close_clear_cancel"
+                android:tint="#e0e2ec" />
+        </RelativeLayout>
+
+        <!-- IP/Port Box -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#0b0e15"
+            android:padding="12dp"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:id="@+id/display_ip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="IP: "
+                android:textColor="#ffb4a8"
+                android:fontFamily="monospace" />
+
+            <TextView
+                android:id="@+id/display_port"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="PORT: "
+                android:textColor="#ffb4a8"
+                android:fontFamily="monospace" />
+                
+            <TextView
+                android:id="@+id/display_ip_port"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="[ SEARCHING... ]"
+                android:textColor="#ff5540"
+                android:fontFamily="monospace"
+                android:layout_marginTop="4dp" />
+        </LinearLayout>
+
+        <!-- Slider Section -->
+        <RelativeLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Attack Time"
+                android:textColor="#e0e2ec"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/attack_time_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_alignParentEnd="true"
+                android:text="Attack Time: 180s"
+                android:textColor="#ff5540"
+                android:textSize="12sp" />
+
+            <SeekBar
+                android:id="@+id/duration_seekbar"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_below="@id/attack_time_label"
+                android:layout_marginTop="8dp"
+                android:max="5"
+                android:progress="3"
+                android:thumbTint="#ff5540"
+                android:progressTint="#ff5540"
+                android:progressBackgroundTint="#32353c" />
+        </RelativeLayout>
+
+        <!-- Buttons Grid -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="16dp">
+
+            <Button
+                android:id="@+id/btn_get_ip_port"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="GET IP PORT"
+                android:textColor="#4ade80"
+                android:background="@drawable/floating_button_outline_bg"
+                android:layout_marginEnd="4dp" />
+
+            <Button
+                android:id="@+id/float_stop_attack_button"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="STOP VPN"
+                android:textColor="#f87171"
+                android:background="@drawable/floating_button_outline_bg"
+                android:layout_marginStart="4dp" />
+        </LinearLayout>
+
+        <!-- Execute Button -->
+        <Button
+            android:id="@+id/float_execute_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="START ATTACK"
+            android:textColor="#5c0000"
+            android:background="@drawable/floating_button_bg" />
+
+        <!-- Terminal Log -->
+        <TextView
+            android:id="@+id/terminal_log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#ebbbb4"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="8dp"
+            android:visibility="gone" />
+
+    </LinearLayout>
+
+</FrameLayout>
