@@ -9,7 +9,7 @@ def run_api_server():
     while True:
         try:
             print("🚀 Starting API Server...")
-            subprocess.run([sys.executable, 'api_server.py'], check=True)
+            subprocess.run([sys.executable, 'api_server.py'], cwd='apk bot panel', check=True)
         except Exception as e:
             print(f"API Server crashed: {e}. Restarting in 5 seconds...")
             time.sleep(5)
@@ -20,7 +20,7 @@ def run_telegram_bot():
     while True:
         try:
             print("🤖 Starting Telegram Bot...")
-            subprocess.run([sys.executable, 'telegram_bot.py'], check=True)
+            subprocess.run([sys.executable, 'telegram_bot.py'], cwd='apk bot panel', check=True)
         except Exception as e:
             print(f"Telegram Bot crashed: {e}. Restarting in 5 seconds...")
             time.sleep(5)
