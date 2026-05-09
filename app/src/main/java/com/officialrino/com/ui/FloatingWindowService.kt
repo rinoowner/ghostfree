@@ -162,7 +162,8 @@ class FloatingWindowService : Service() {
             NetworkCaptureService.clearCaptured()
             isSearching = true
             statusText.text = "SEARCHING..."
-            displayIpPort.text = "[ SEARCHING... ]"
+            displayIp.text = "IP: "
+            displayPort.text = "PORT: "
             showGlobalToast("SEARCHING FOR TARGET...")
 
             val vpnIntent = android.net.VpnService.prepare(this)
