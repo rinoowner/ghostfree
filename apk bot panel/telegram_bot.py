@@ -1187,5 +1187,13 @@ print(f"👑 Owner ID: {OWNER_ID}")
 print(f"📦 Database: MongoDB")
 print("=" * 60)
 
+# ========== FORCE KILL OTHER INSTANCES ==========
+print("🔄 Removing any existing webhooks and terminating other instances...")
+try:
+    bot.delete_webhook(drop_pending_updates=True)
+    print("✅ Webhook cleared successfully!")
+except Exception as e:
+    print(f"⚠️ Webhook clear warning: {e}")
+
 print("🤖 Telegram Bot Started (MongoDB + Full Key Management)!")
-bot.infinity_polling()
+bot.infinity_polling(skip_pending=True, restart_on_change=False)
