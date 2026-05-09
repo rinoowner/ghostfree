@@ -461,7 +461,7 @@ def get_ip_endpoint():
 
 # ========== START SERVER (when run directly) ==========
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5001))
+    port = int(os.environ.get('PORT', 8080))
     server_ip = get_server_ip()
     print("=" * 60)
     print("⚡ RETROSTRESS API SERVER STARTING...")
