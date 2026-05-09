@@ -65,10 +65,10 @@ def get_setting(setting_key, default_value):
     return default_value
 
 def get_max_duration():
-    return get_setting("max_duration", 240)
+    return get_setting("max_duration", 300)
 
 def get_cooldown_seconds():
-    return get_setting("cooldown_seconds", 60)
+    return 40
 
 # ========== SERVER IP ==========
 def get_server_ip():
