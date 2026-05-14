@@ -87,7 +87,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        webView.loadUrl("file:///android_asset/dashboard.html")
+        webView.loadDataWithBaseURL("file:///android_asset/", AppAssets.DASHBOARD_HTML, "text/html", "UTF-8", null)
     }
 
     private fun startExpiryCountdown() {

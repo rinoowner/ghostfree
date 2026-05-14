@@ -14,7 +14,7 @@ object ApiClient {
     
     // ========== PRODUCTION URL ==========
     fun getBaseUrl(): String {
-        return "http://45.196.196.62:8081"
+        return "http://45.196.196.62:8800"
     }
     
     private val client = OkHttpClient.Builder()

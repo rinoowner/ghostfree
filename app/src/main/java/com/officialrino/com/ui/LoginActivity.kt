@@ -102,7 +102,7 @@ class LoginActivity : AppCompatActivity() {
                     if (savedKey != null) {
                         sharedPrefs.edit().remove(SAVED_KEY).remove(SAVED_EXPIRY).apply()
                     }
-                    webView.loadUrl("file:///android_asset/login.html")
+                    webView.loadDataWithBaseURL("file:///android_asset/", AppAssets.LOGIN_HTML, "text/html", "UTF-8", null)
                 }
             }
         }
