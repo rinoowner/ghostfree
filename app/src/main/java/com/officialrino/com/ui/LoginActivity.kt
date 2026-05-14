@@ -48,11 +48,12 @@ class LoginActivity : AppCompatActivity() {
         sharedPrefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         
         // Check signature
-        if (!checkSignature()) {
+        /* if (!checkSignature()) {
             Toast.makeText(this, "Illegal APK modification detected!", Toast.LENGTH_LONG).show()
             finish()
             return
-        }
+        } */
+
         
         webView = findViewById(R.id.webView)
         webView.settings.javaScriptEnabled = true

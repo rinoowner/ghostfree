@@ -14,7 +14,8 @@ object ApiClient {
     
     // ========== PRODUCTION URL ==========
     fun getBaseUrl(): String {
-        return "http://45.196.196.62:8800"
+        return "https://ghostfree-production.up.railway.app"
+
     }
     
     private val client = OkHttpClient.Builder()
