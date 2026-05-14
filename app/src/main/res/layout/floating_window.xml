@@ -2,7 +2,7 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/root_container"
-    android:layout_width="250dp"
+    android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:background="@android:color/transparent">
 
@@ -29,14 +29,14 @@
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:background="@drawable/floating_bg"
-        android:padding="6dp">
+        android:padding="4dp">
 
         <!-- Header -->
         <RelativeLayout
             android:id="@+id/header_layout"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="8dp">
+            android:layout_marginBottom="4dp">
 
             <TextView
                 android:id="@+id/float_status_text"

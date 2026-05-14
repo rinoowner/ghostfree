@@ -76,7 +76,7 @@ class FloatingWindowService : Service() {
 
         val density = resources.displayMetrics.density
         params = WindowManager.LayoutParams(
-            (220 * density).toInt(),
+            (320 * density).toInt(),
             WindowManager.LayoutParams.WRAP_CONTENT,
             layoutType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
