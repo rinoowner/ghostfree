@@ -17,11 +17,15 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.Spinner
+import android.widget.ArrayAdapter
+import android.widget.AdapterView
 import androidx.core.content.ContextCompat
 import com.officialrino.com.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -32,7 +36,6 @@ class FloatingWindowService : Service() {
     private lateinit var params: WindowManager.LayoutParams
     
     private lateinit var executeButton: Button
-    private lateinit var stopAttackButton: Button
     private lateinit var statusText: TextView
     private lateinit var contentLayout: LinearLayout
     private lateinit var minimizedLayout: View
@@ -40,10 +43,19 @@ class FloatingWindowService : Service() {
     private lateinit var displayPort: TextView
     private lateinit var attackTimeLabel: TextView
     private lateinit var durationSeekBar: SeekBar
+    private lateinit var activeSlotsText: TextView
     
     private var isMinimized = false
     private var selectedDuration = 180
-    private var syncJob: Job? = null
+    private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
+    
+    private val fakeMessages = arrayOf(
+        "🔥 User ID 47x ne abhi 300s ka VIP attack lagaya...",
+        "🔥 User ID 12k ne abhi target down kiya...",
+        "🔥 New VIP User joined the server!",
+        "🔥 Server load high: Paid users attacking...",
+        "🔥 User ID 88p ne bypass method use kiya..."
+    )
     
     private var isSearching = false
 
@@ -64,7 +76,7 @@ class FloatingWindowService : Service() {
 
         val density = resources.displayMetrics.density
         params = WindowManager.LayoutParams(
-            (300 * density).toInt(),
+            (220 * density).toInt(),
             WindowManager.LayoutParams.WRAP_CONTENT,
             layoutType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
@@ -79,7 +91,6 @@ class FloatingWindowService : Service() {
 
         // Initialize Views
         executeButton = floatingView.findViewById(R.id.float_execute_button)
-        stopAttackButton = floatingView.findViewById(R.id.float_stop_attack_button)
         statusText = floatingView.findViewById(R.id.float_status_text)
         contentLayout = floatingView.findViewById(R.id.content_layout)
         minimizedLayout = floatingView.findViewById(R.id.minimized_layout)
@@ -88,8 +99,10 @@ class FloatingWindowService : Service() {
         displayPort = floatingView.findViewById(R.id.display_port)
         attackTimeLabel = floatingView.findViewById(R.id.attack_time_label)
         durationSeekBar = floatingView.findViewById(R.id.duration_seekbar)
+        activeSlotsText = floatingView.findViewById(R.id.active_slots_text)
         val btnGetIpPort = floatingView.findViewById<Button>(R.id.btn_get_ip_port)
         val closeButton = floatingView.findViewById<ImageView>(R.id.close_button)
+
 
         // Drag functionality
         val dragTouchListener = object : View.OnTouchListener {
@@ -152,7 +165,28 @@ class FloatingWindowService : Service() {
         executeButton.setOnClickListener {
             vibrate(50)
             applyClickAnimation(it)
+            
+            // Low Priority Slots Simulation
+            if (Math.random() < 0.4) {
+                showVipDialog("Server Busy, Paid users are attacking. Buy Premium for instant attack.")
+                return@setOnClickListener
+            }
+            
             performSmartLaunch()
+        }
+
+        val btnBuyPremium = floatingView.findViewById<Button>(R.id.btn_buy_premium)
+        btnBuyPremium.setOnClickListener {
+            vibrate(50)
+            applyClickAnimation(it)
+            
+            val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/officialrino?text=/buy_premium"))
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                startActivity(intent)
+            } catch (e: Exception) {
+                showGlobalToast("Telegram not found. Visit t.me/officialrino")
+            }
         }
         
         btnGetIpPort.setOnClickListener {
@@ -179,26 +213,54 @@ class FloatingWindowService : Service() {
             }
         }
 
-        stopAttackButton.setOnClickListener {
-            vibrate(50)
-            applyClickAnimation(it)
-            stopActiveAttack()
-        }
+        durationSeekBar.max = 5
+        durationSeekBar.progress = 1
+        selectedDuration = 60
+        attackTimeLabel.text = "Attack Time: 60s"
 
+        var triedToGoPastLimit = false
         durationSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val actualDuration = progress * 60
-                selectedDuration = actualDuration
-                attackTimeLabel.text = "Attack Time: ${actualDuration}s"
+                if (fromUser && progress > 1) {
+                    seekBar?.progress = 1
+                    triedToGoPastLimit = true
+                    return
+                }
+                
+                val duration = if (progress == 0) 30 else progress * 60
+                selectedDuration = duration
+                attackTimeLabel.text = "Attack Time: ${duration}s"
+                
                 if (fromUser) {
                     vibrate(30)
                 }
             }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                triedToGoPastLimit = false
+            }
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                if (triedToGoPastLimit) {
+                    vibrate(50)
+                    showVipDialog("Upgrade to VIP for duration > 60s.")
+                    triedToGoPastLimit = false
+                }
+            }
         })
 
         startSyncLoop()
+        startTickerLoop()
+    }
+
+    private fun startTickerLoop() {
+        val tickerText = floatingView.findViewById<TextView>(R.id.live_ticker)
+        serviceScope.launch {
+            var index = 0
+            while (true) {
+                tickerText.text = fakeMessages[index]
+                index = (index + 1) % fakeMessages.size
+                kotlinx.coroutines.delay(5000)
+            }
+        }
     }
 
     private fun toggleMinimize(minimize: Boolean) {
@@ -212,7 +274,7 @@ class FloatingWindowService : Service() {
         } else {
             contentLayout.visibility = View.VISIBLE
             minimizedLayout.visibility = View.GONE
-            params.width = (300 * density).toInt()
+            params.width = (220 * density).toInt()
             params.height = WindowManager.LayoutParams.WRAP_CONTENT
         }
         windowManager.updateViewLayout(floatingView, params)
@@ -233,27 +295,67 @@ class FloatingWindowService : Service() {
             return
         }
 
+        // Daily Limit Check
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
+        val savedDate = sharedPrefs.getString("attack_date", "")
+        var attackCount = sharedPrefs.getInt("attack_count", 0)
+        
+        if (savedDate != today) {
+            attackCount = 0
+            sharedPrefs.edit().putString("attack_date", today).putInt("attack_count", 0).apply()
+        }
+        
+        if (attackCount >= 3) {
+            showVipDialog("Today's Free Limit Over! Kal tak ka wait karein ya abhi Unlimited attacks ke liye Premium lein.")
+            return
+        }
+
+        // One-Time Sample Check
+        val isFirstAttack = sharedPrefs.getBoolean("is_first_attack", true)
+        var durationToUse = selectedDuration
+        
+        if (isFirstAttack) {
+            durationToUse = 300
+            showGlobalToast("Welcome Gift: Enjoy 300s VIP Attack!")
+        }
+
         executeButton.isEnabled = false
         executeButton.text = "LAUNCHING..."
         showGlobalToast("INITIATING ATTACK...")
 
-        CoroutineScope(Dispatchers.IO).launch {
-            val result = ApiClient.startAttack(key, ip, port, selectedDuration)
-            withContext(Dispatchers.Main) {
-                executeButton.isEnabled = true
-                executeButton.text = "START ATTACK"
-                if (result.success) {
-                    sharedPrefs.edit()
-                        .putLong("last_attack_time", System.currentTimeMillis())
-                        .putInt("last_attack_duration", selectedDuration)
-                        .apply()
-                    showGlobalToast("🚀 ATTACK SENT SUCCESSFULLY!")
-                    vibrate(100)
-                } else {
-                    showGlobalToast("❌ FAILED: ${result.message}")
+        serviceScope.launch {
+            val result = ApiClient.startAttack(this@FloatingWindowService, key, ip, port, durationToUse)
+            executeButton.isEnabled = true
+            executeButton.text = "START ATTACK"
+            if (result.success) {
+                sharedPrefs.edit()
+                    .putLong("last_attack_time", System.currentTimeMillis())
+                    .putInt("last_attack_duration", durationToUse)
+                    .putInt("attack_count", attackCount + 1)
+                    .putBoolean("is_first_attack", false)
+                    .apply()
+                showGlobalToast("🚀 ATTACK SENT SUCCESSFULLY!")
+                vibrate(100)
+            } else {
+                showGlobalToast("❌ FAILED: ${result.message}")
+                if (result.message.contains("Key expired", ignoreCase = true) || result.message.contains("401")) {
+                    performLogout()
                 }
             }
         }
+    }
+
+    private fun performLogout() {
+        val sharedPrefs = getSharedPreferences("OfficialrinoPrefs", Context.MODE_PRIVATE)
+        sharedPrefs.edit().clear().apply()
+        
+        showGlobalToast("❌ KEY EXPIRED. LOGGING OUT...")
+        
+        val intent = Intent(this, LoginActivity::class.java)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
+        
+        stopSelf()
     }
 
     private fun stopActiveAttack() {
@@ -268,24 +370,26 @@ class FloatingWindowService : Service() {
     }
 
     private fun startSyncLoop() {
-        syncJob = CoroutineScope(Dispatchers.Main).launch {
+        serviceScope.launch {
             while (true) {
                 val ip = NetworkCaptureService.getCapturedIp()
                 val port = NetworkCaptureService.getCapturedPort()
                 
                 val sharedPrefs = getSharedPreferences("OfficialrinoPrefs", Context.MODE_PRIVATE)
                 val lastAttackTime = sharedPrefs.getLong("last_attack_time", 0)
-                val lastDuration = sharedPrefs.getInt("last_attack_duration", 0)
                 val currentTime = System.currentTimeMillis()
-                val attackEndTime = lastAttackTime + (lastDuration * 1000L)
+                val cooldownDuration = 300 * 1000L // 300 seconds
+                val cooldownEndTime = lastAttackTime + cooldownDuration
                 
-                if (currentTime < attackEndTime) {
-                    // Attack running - don't show countdown, just disable button
-                    val remainingSec = (attackEndTime - currentTime) / 1000
-                    // attackTimeLabel stays at selected duration - no countdown
+                val btnBuyPremium = floatingView.findViewById<Button>(R.id.btn_buy_premium)
+                
+                if (currentTime < cooldownEndTime) {
+                    val remainingSec = (cooldownEndTime - currentTime) / 1000
                     
                     executeButton.isEnabled = false
-                    executeButton.text = "WAIT ${remainingSec}s"
+                    executeButton.text = "COOLDOWN ${remainingSec}s"
+                    
+                    btnBuyPremium.text = "Skip Wait & Attack Now"
                     
                     if (ip != null && port != null) {
                         displayIp.text = "IP: $ip"
@@ -294,6 +398,8 @@ class FloatingWindowService : Service() {
                 } else {
                     executeButton.isEnabled = true
                     executeButton.text = "START ATTACK"
+                    
+                    btnBuyPremium.text = "BUY PREMIUM (TG)"
                     
                     if (isSearching) {
                         if (ip != null && port != null) {
@@ -321,10 +427,53 @@ class FloatingWindowService : Service() {
                 kotlinx.coroutines.delay(1000)
             }
         }
+
+        serviceScope.launch {
+            while (true) {
+                try {
+                    val attacksResult = ApiClient.getActiveAttacks()
+                    if (attacksResult.success) {
+                        updateActiveAttacksUI(attacksResult.attacks)
+                    }
+                } catch (e: Exception) {
+                    // Ignore
+                }
+                kotlinx.coroutines.delay(5000)
+            }
+        }
+    }
+
+    private fun updateActiveAttacksUI(attacks: List<ApiClient.ActiveAttack>) {
+        activeSlotsText.text = "ACTIVE SLOTS: ${attacks.size}/6"
     }
 
     private fun showGlobalToast(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showVipDialog(message: String) {
+        val builder = android.app.AlertDialog.Builder(this)
+        builder.setTitle("GHOST X SERVER VIP")
+        builder.setMessage(message)
+        builder.setPositiveButton("BUY PREMIUM") { _, _ ->
+            val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/officialrino?text=/buy_premium"))
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                startActivity(intent)
+            } catch (e: Exception) {
+                showGlobalToast("Telegram not found. Visit t.me/officialrino")
+            }
+        }
+        builder.setNegativeButton("CANCEL", null)
+        
+        val dialog = builder.create()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            dialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+        } else {
+            @Suppress("DEPRECATION")
+            dialog.window?.setType(WindowManager.LayoutParams.TYPE_PHONE)
+        }
+        dialog.show()
     }
 
     private fun vibrate(durationMs: Long) {
@@ -354,9 +503,14 @@ class FloatingWindowService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        syncJob?.cancel()
+        serviceScope.cancel()
         if (::floatingView.isInitialized) {
             windowManager.removeView(floatingView)
         }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        stopSelf()
     }
 }

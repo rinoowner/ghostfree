@@ -4,12 +4,12 @@ import threading
 import sys
 
 def run_api_server():
-    """Run api_server.py"""
+    """Run free_server.py"""
     import subprocess
     while True:
         try:
             print("🚀 Starting API Server...")
-            subprocess.run([sys.executable, 'api_server.py'], check=True)
+            subprocess.run([sys.executable, 'free_server.py'], check=True)
         except Exception as e:
             print(f"API Server crashed: {e}. Restarting in 5 seconds...")
             time.sleep(5)

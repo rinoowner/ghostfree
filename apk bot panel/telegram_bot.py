@@ -18,6 +18,14 @@ OWNER_ID = int(os.getenv("OWNER_ID", "8664423338"))
 MONGODB_URI = os.getenv("MONGODB_URI")
 DATABASE_NAME = os.getenv("DATABASE_NAME")
 
+RESELLER_PRICING = {
+    "12h": 20,
+    "1d": 40,
+    "3d": 120,
+    "7d": 200,
+    "30d": 500
+}
+
 if not BOT_TOKEN:
     print("❌ ERROR: BOT_TOKEN environment variable not set!")
     exit(1)
@@ -49,10 +57,10 @@ try:
     active_sessions_collection.create_index([("key", ASCENDING)])
     settings_collection.create_index([("setting_key", ASCENDING)], unique=True)
     
-    print("✅ MongoDB connected successfully!")
+    print("[INFO] MongoDB connected successfully!")
     
 except Exception as e:
-    print(f"❌ MongoDB connection failed: {e}")
+    print(f"[ERROR] MongoDB connection failed: {e}")
     exit(1)
 
 # ========== HELPER FUNCTIONS ==========
@@ -146,7 +154,7 @@ def start_cmd(message):
             f"📋 Commands:\n"
             f"/gen - Generate Key (1 device limit)\n"
             f"/genlimit - Generate Key with custom device limit (no upper limit)\n"
-            f"/makekey - Create custom key with your own name\n"
+            f"/makefreekey - Create custom key with your own name\n"
             f"/mykeys - View your generated keys\n"
             f"/deletekey KEY - Delete your key (OWN keys only, any status)\n"
             f"/resetkey KEY - Force logout user\n"
@@ -162,13 +170,17 @@ def start_cmd(message):
             f"/setcooldown SECONDS - Set attack cooldown\n"
             f"/viewsettings - View current settings\n"
             f"/broadcast MESSAGE - Send message to all admins (Owner only)\n"
-            f"/ip - Show server IP")
+            f"/ip - Show server IP\n"
+            f"/updateapk VERSION - Upload new APK (Owner only)\n"
+            f"/setupdate VERSION URL - Set update via link (Owner only)\n"
+            f"/checkkey KEY - Check active devices for a key (Owner only)")
     elif is_admin(user_id):
         bot.reply_to(message,
             f"👋 Welcome Admin!\n\n"
             f"📋 Commands:\n"
             f"/gen - Generate Key (1 device limit)\n"
             f"/mykeys - View your generated keys\n"
+            f"/mybalance - View your current balance\n"
             f"/deletekey KEY - Delete YOUR key (any status, only keys YOU generated)\n"
             f"/resetkey KEY - Force logout user (only keys YOU generated)\n"
             f"/delmykeys - Delete ALL keys YOU generated (any status)\n"
@@ -199,16 +211,52 @@ def generate_keys(message):
             duration_str = parts[1]
             quantity = int(parts[2])
         else:
-            bot.reply_to(message, "Usage: /gen 1h or /gen 1d 5")
+            pricing_text = (
+                "📝 **How to Generate Keys:**\n"
+                "`/gen <duration> [quantity]`\n\n"
+                "**Examples:**\n"
+                "`/gen 12h` - Generate 1 key for 12 hours\n"
+                "`/gen 1d 5` - Generate 5 keys for 1 day\n\n"
+                "💰 **Reseller Price List:**\n"
+                "• 12 Hours: 20 balance\n"
+                "• 1 Day: 40 balance\n"
+                "• 3 Days: 120 balance\n"
+                "• 7 Days: 200 balance\n"
+                "• 30 Days: 500 balance\n\n"
+                "💡 *Note:* Owner can use any custom duration (e.g., 1h, 5d)."
+            )
+            bot.reply_to(message, pricing_text, parse_mode="Markdown")
             return
         
         if quantity < 1 or quantity > 100:
             bot.reply_to(message, "Quantity must be between 1 and 100")
             return
+            
+        duration_str = duration_str.lower().strip()
+        
+        # Check pricing and balance for admins (Owner is exempt)
+        cost_per_key = 0
+        is_owner_user = is_owner(user_id)
+        
+        if not is_owner_user:
+            if duration_str not in RESELLER_PRICING:
+                allowed_durations = ", ".join(RESELLER_PRICING.keys())
+                bot.reply_to(message, f"❌ Invalid duration for reseller! Allowed durations are: {allowed_durations}")
+                return
+            
+            cost_per_key = RESELLER_PRICING[duration_str]
+            total_cost = cost_per_key * quantity
+            
+            admin_data = admins_collection.find_one({"user_id": user_id})
+            current_balance = admin_data.get('balance', 0) if admin_data else 0
+            
+            if current_balance < total_cost:
+                bot.reply_to(message, f"❌ Insufficient balance!\nRequired: {total_cost}\nYour Balance: {current_balance}")
+                return
         
         duration = parse_duration(duration_str)
         if not duration:
-            bot.reply_to(message, "Invalid duration. Use: 1h, 2d, 30m")
+            bot.reply_to(message, "Invalid duration format!")
             return
         
         keys_generated = []
@@ -237,6 +285,13 @@ def generate_keys(message):
                 key_data['key'] = key
                 keys_collection.insert_one(key_data)
                 keys_generated.append(key)
+        
+        # Deduct balance for admins
+        if not is_owner_user and cost_per_key > 0:
+            admins_collection.update_one(
+                {"user_id": user_id},
+                {"$inc": {"balance": -total_cost}}
+            )
         
         # Auto-delete unused keys older than 7 days
         auto_expiry = int((datetime.now() - timedelta(days=7)).timestamp() * 1000)
@@ -357,7 +412,7 @@ def generate_limited_keys(message):
 
 # ========== CUSTOM KEY GENERATION (OWNER ONLY) ==========
 
-@bot.message_handler(commands=['makekey'])
+@bot.message_handler(commands=['makekey', 'makefreekey'])
 def make_custom_key(message):
     user_id = message.from_user.id
     
@@ -369,10 +424,10 @@ def make_custom_key(message):
         parts = message.text.split()
         if len(parts) != 4:
             bot.reply_to(message, 
-                "📝 **Usage:** `/makekey <key_text> <duration> <device_limit>`\n\n"
+                "📝 **Usage:** `/makefreekey <key_text> <duration> <device_limit>`\n\n"
                 "**Examples:**\n"
-                "`/makekey Sparsh 24h 5` - Key: Sparsh, 24 hours, 5 devices\n"
-                "`/makekey Myname 2d 10` - Key: Myname, 2 days, 10 devices\n"
+                "`/makefreekey Sparsh 24h 5` - Key: Sparsh, 24 hours, 5 devices\n"
+                "`/makefreekey Myname 2d 10` - Key: Myname, 2 days, 10 devices\n"
                 "`/makekey Test 30m 3` - Key: Test, 30 minutes, 3 devices\n\n"
                 "⚠️ **Note:** Key text can only contain letters & numbers (no spaces)\n"
                 "Keys are case-sensitive - use exactly as entered!",
@@ -398,9 +453,7 @@ def make_custom_key(message):
             bot.reply_to(message, "❌ Device limit must be at least 1!")
             return
         
-        if device_limit > 100:
-            bot.reply_to(message, "❌ Device limit cannot exceed 100!")
-            return
+        # Removed limit of 100 devices as per user request
         
         # Parse duration
         duration = parse_duration(duration_str)
@@ -457,7 +510,11 @@ def my_keys(message):
     
     keys = list(keys_collection.find({"generated_by": user_id}).sort("generated_at", -1).limit(50))
     now = int(time.time() * 1000)
-    response = "🔑 Your Keys:\n\n"
+    
+    admin_data = admins_collection.find_one({"user_id": user_id})
+    balance = admin_data.get('balance', 0) if admin_data else 0
+    response = f"💰 **Your Balance:** {balance}\n"
+    response += "🔑 **Your Keys:**\n\n"
     
     for data in keys:
         key = data.get('key')
@@ -485,6 +542,18 @@ def my_keys(message):
         bot.reply_to(message, "No keys generated yet.")
     else:
         bot.reply_to(message, response[:4000], parse_mode='HTML')
+
+@bot.message_handler(commands=['mybalance'])
+def my_balance(message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        bot.reply_to(message, "❌ Unauthorized")
+        return
+        
+    admin_data = admins_collection.find_one({"user_id": user_id})
+    balance = admin_data.get('balance', 0) if admin_data else 0
+    
+    bot.reply_to(message, f"💰 **Your Current Balance:** {balance}", parse_mode="Markdown")
 
 # ========== DELETE KEY (Single) ==========
 
@@ -727,6 +796,48 @@ def reset_key(message):
     
     bot.reply_to(message, f"🔄 Key <code>{key}</code> has been reset. User logged out.", parse_mode='HTML')
 
+# ========== CHECK KEY SESSIONS (OWNER ONLY) ==========
+
+@bot.message_handler(commands=['checkkey'])
+def check_key_sessions(message):
+    user_id = message.from_user.id
+    if not is_owner(user_id):
+        bot.reply_to(message, "❌ Owner only command!")
+        return
+        
+    try:
+        parts = message.text.split()
+        if len(parts) != 2:
+            bot.reply_to(message, "Usage: /checkkey KEY")
+            return
+            
+        key = parts[1]
+        
+        # Count active sessions
+        count = active_sessions_collection.count_documents({"key": key})
+        
+        key_data = keys_collection.find_one({"key": key})
+        device_limit = key_data.get('device_limit', 1) if key_data else "Unknown"
+        
+        response = (
+            f"🔑 **Key:** `{key}`\n"
+            f"📱 **Active Devices:** {count} / {device_limit}\n"
+        )
+        
+        # Show device details if available
+        sessions = list(active_sessions_collection.find({"key": key}))
+        if sessions:
+            response += "\n**Connected Devices:**\n"
+            for i, session in enumerate(sessions):
+                device_id = session.get('device_id', 'Unknown')
+                ip = session.get('ip', 'Unknown')
+                response += f"{i+1}. Device: `{device_id}` | IP: `{ip}`\n"
+                
+        bot.reply_to(message, response, parse_mode="Markdown")
+        
+    except Exception as e:
+        bot.reply_to(message, f"Error: {str(e)}")
+
 # ========== VIEW ALL KEYS ==========
 
 @bot.message_handler(commands=['allkeys'])
@@ -781,7 +892,8 @@ def add_admin(message):
     admins_collection.insert_one({
         "user_id": new_admin,
         "added_by": message.from_user.id,
-        "added_at": int(time.time() * 1000)
+        "added_at": int(time.time() * 1000),
+        "balance": 0
     })
     bot.reply_to(message, f"✅ User <code>{new_admin}</code> is now an admin!", parse_mode='HTML')
     
@@ -797,6 +909,42 @@ def add_admin(message):
                          "/delmyunusedkeys - Delete YOUR unused keys")
     except:
         pass
+
+@bot.message_handler(commands=['setbalance'])
+def set_balance(message):
+    if not is_owner(message.from_user.id):
+        bot.reply_to(message, "❌ Owner only command.")
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) != 3:
+            bot.reply_to(message, "Usage: /setbalance USER_ID AMOUNT")
+            return
+        
+        target_user = int(parts[1])
+        amount = int(parts[2])
+        
+        if not admins_collection.find_one({"user_id": target_user}):
+            bot.reply_to(message, f"❌ User <code>{target_user}</code> is not an admin!", parse_mode='HTML')
+            return
+            
+        admins_collection.update_one(
+            {"user_id": target_user},
+            {"$set": {"balance": amount}}
+        )
+        
+        bot.reply_to(message, f"✅ Balance set to <b>{amount}</b> for user <code>{target_user}</code>!", parse_mode='HTML')
+        
+        try:
+            bot.send_message(target_user, f"💰 Your balance has been updated to: <b>{amount}</b>", parse_mode='HTML')
+        except:
+            pass
+            
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid input! Please enter valid numbers.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}")
 
 @bot.message_handler(commands=['removeadmin'])
 def remove_admin(message):
@@ -840,7 +988,8 @@ def list_admins(message):
         added_by = admin.get('added_by')
         added_at = admin.get('added_at', 0)
         added_time = datetime.fromtimestamp(added_at / 1000).strftime("%Y-%m-%d %H:%M:%S")
-        response += f"• Admin: <code>{admin_id}</code>\n  Added by: {added_by}\n  Added on: {added_time}\n\n"
+        balance = admin.get('balance', 0)
+        response += f"• Admin: <code>{admin_id}</code>\n  Balance: <b>{balance}</b>\n  Added by: {added_by}\n  Added on: {added_time}\n\n"
     
     bot.reply_to(message, response[:4000], parse_mode='HTML')
 
@@ -1176,24 +1325,153 @@ def release_key_session(key, device_id=None):
         else:
             active_sessions_collection.delete_one({"key": key})
 
+# ========== OWNER ONLY: UPLOAD NEW APK ==========
+
+@bot.message_handler(commands=['updateapk'])
+def update_apk_help(message):
+    user_id = message.from_user.id
+    if not is_owner(user_id):
+        bot.reply_to(message, "❌ Owner only command!")
+        return
+    bot.reply_to(message, "❌ Please attach the APK file and use `/updateapk <version_code>` in the caption.\nExample: Send APK file with caption: `/updateapk 2.0`")
+
+@bot.message_handler(content_types=['document'], func=lambda message: message.caption and message.caption.startswith('/updateapk'))
+def update_apk_command(message):
+    user_id = message.from_user.id
+    if not is_owner(user_id):
+        bot.reply_to(message, "❌ Owner only command!")
+        return
+        
+    # Get version code from caption
+    try:
+        caption = message.caption or ""
+        args = caption.split()
+        if len(args) < 2:
+            bot.reply_to(message, "❌ Please provide the version code in the caption. Example: `/updateapk 2.0`")
+            return
+        version_code = args[1]
+    except Exception as e:
+        bot.reply_to(message, "❌ Error parsing version code.")
+        return
+        
+    # Check if file is an APK
+    file_name = message.document.file_name
+    if not file_name.endswith('.apk'):
+        bot.reply_to(message, "❌ Please upload a valid .apk file.")
+        return
+        
+    bot.reply_to(message, "⏳ Downloading APK...")
+    
+    try:
+        file_info = bot.get_file(message.document.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        # Create static directory if it doesn't exist
+        os.makedirs('static', exist_ok=True)
+        
+        # Save file
+        apk_path = os.path.join('static', 'app-release.apk')
+        with open(apk_path, 'wb') as new_file:
+            new_file.write(downloaded_file)
+            
+        # Update database
+        settings_collection.update_one(
+            {"setting_key": "latest_version"},
+            {"$set": {"setting_value": version_code, "updated_at": int(time.time() * 1000)}},
+            upsert=True
+        )
+        
+        bot.reply_to(message, f"✅ APK updated successfully!\n📦 Version: {version_code}\n📂 Saved as: {apk_path}")
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Failed to update APK: {str(e)}")
+
+# ========== OWNER ONLY: SET UPDATE LINK ==========
+
+@bot.message_handler(commands=['setupdate'])
+def set_update_command(message):
+    user_id = message.from_user.id
+    if not is_owner(user_id):
+        bot.reply_to(message, "❌ Owner only command!")
+        return
+        
+    args = message.text.split()
+    if len(args) < 3:
+        bot.reply_to(message, "❌ Please provide version and URL. Example: `/setupdate 1.2 https://github.com/.../app.apk`")
+        return
+        
+    version_code = args[1]
+    download_url = args[2]
+    
+    # Update database
+    settings_collection.update_one(
+        {"setting_key": "latest_version"},
+        {"$set": {"setting_value": version_code, "updated_at": int(time.time() * 1000)}},
+        upsert=True
+    )
+    
+    settings_collection.update_one(
+        {"setting_key": "apk_download_url"},
+        {"$set": {"setting_value": download_url, "updated_at": int(time.time() * 1000)}},
+        upsert=True
+    )
+    
+    bot.reply_to(message, f"✅ Update info saved!\n📦 Version: {version_code}\n🔗 URL: {download_url}")
+
+# ========== OWNER ONLY: CHECK KEY SESSIONS ==========
+
+@bot.message_handler(commands=['checkkey'])
+def check_key_command(message):
+    user_id = message.from_user.id
+    if not is_owner(user_id):
+        bot.reply_to(message, "❌ Owner only command!")
+        return
+        
+    args = message.text.split()
+    if len(args) < 2:
+        bot.reply_to(message, "❌ Please provide the key. Example: `/checkkey KEY`")
+        return
+        
+    key = args[1]
+    
+    session = active_sessions_collection.find_one({"key": key})
+    if not session:
+        bot.reply_to(message, "❌ No active session found for this key (No devices logged in).")
+        return
+        
+    devices = session.get('devices', {})
+    device_count = len(devices)
+    
+    response = f"🔑 Key: `{key}`\n"
+    response += f"📱 Active Devices: **{device_count}**\n\n"
+    
+    if device_count > 0:
+        response += "📋 Device List:\n"
+        for i, (device_id, data) in enumerate(devices.items(), 1):
+            login_time = data.get('login_time', 0)
+            login_time_str = datetime.fromtimestamp(login_time / 1000).strftime("%Y-%m-%d %H:%M:%S") if login_time else "Unknown"
+            response += f"{i}. Device ID: `{device_id[:10]}...` (Logged in: {login_time_str})\n"
+            
+    bot.reply_to(message, response, parse_mode='Markdown')
+
 # ========== STARTUP ==========
 
 server_ip = get_server_ip()
 print("=" * 60)
-print("🤖 TELEGRAM BOT STARTING...")
+print("TELEGRAM BOT STARTING...")
 print("=" * 60)
-print(f"🖥️ Server IP: {server_ip}")
-print(f"👑 Owner ID: {OWNER_ID}")
-print(f"📦 Database: MongoDB")
+print(f"Server IP: {server_ip}")
+print(f"Owner ID: {OWNER_ID}")
+print(f"Database: MongoDB")
 print("=" * 60)
 
 # ========== FORCE KILL OTHER INSTANCES ==========
-print("🔄 Removing any existing webhooks and terminating other instances...")
+print("Removing any existing webhooks and terminating other instances...")
 try:
     bot.delete_webhook(drop_pending_updates=True)
-    print("✅ Webhook cleared successfully!")
+    print("Webhook cleared successfully!")
 except Exception as e:
-    print(f"⚠️ Webhook clear warning: {e}")
+    print(f"Webhook clear warning: {e}")
 
-print("🤖 Telegram Bot Started (MongoDB + Full Key Management)!")
+print("Telegram Bot Started (MongoDB + Full Key Management)!")
 bot.infinity_polling(skip_pending=True, restart_on_change=False)

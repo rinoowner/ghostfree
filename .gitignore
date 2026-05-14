@@ -16,3 +16,6 @@ local.properties
 .env
 .env.txt
 *.hprof
+build_log.txt
+build_log_2.txt
+.idea/
