@@ -798,45 +798,8 @@ def reset_key(message):
 
 # ========== CHECK KEY SESSIONS (OWNER ONLY) ==========
 
-@bot.message_handler(commands=['checkkey'])
-def check_key_sessions(message):
-    user_id = message.from_user.id
-    if not is_owner(user_id):
-        bot.reply_to(message, "❌ Owner only command!")
-        return
-        
-    try:
-        parts = message.text.split()
-        if len(parts) != 2:
-            bot.reply_to(message, "Usage: /checkkey KEY")
-            return
-            
-        key = parts[1]
-        
-        # Count active sessions
-        count = active_sessions_collection.count_documents({"key": key})
-        
-        key_data = keys_collection.find_one({"key": key})
-        device_limit = key_data.get('device_limit', 1) if key_data else "Unknown"
-        
-        response = (
-            f"🔑 **Key:** `{key}`\n"
-            f"📱 **Active Devices:** {count} / {device_limit}\n"
-        )
-        
-        # Show device details if available
-        sessions = list(active_sessions_collection.find({"key": key}))
-        if sessions:
-            response += "\n**Connected Devices:**\n"
-            for i, session in enumerate(sessions):
-                device_id = session.get('device_id', 'Unknown')
-                ip = session.get('ip', 'Unknown')
-                response += f"{i+1}. Device: `{device_id}` | IP: `{ip}`\n"
-                
-        bot.reply_to(message, response, parse_mode="Markdown")
-        
-    except Exception as e:
-        bot.reply_to(message, f"Error: {str(e)}")
+# Removed duplicate incorrect checkkey handler
+
 
 # ========== VIEW ALL KEYS ==========
 
