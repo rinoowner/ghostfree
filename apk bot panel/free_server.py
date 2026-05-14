@@ -53,6 +53,8 @@ except Exception as e:
     exit(1)
 
 # Telegram bot is now managed by bot.py
+# Force rebuild trigger to resolve conflict
+
 
 
 # ========== SETTINGS MANAGEMENT ==========
