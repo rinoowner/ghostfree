@@ -52,14 +52,8 @@ except Exception as e:
     log(f"❌ MongoDB connection failed: {e}", "ERROR")
     exit(1)
 
-# Start Telegram bot
-try:
-    import subprocess
-    import sys
-    subprocess.Popen([sys.executable, "telegram_bot.py"], cwd=os.path.dirname(os.path.abspath(__file__)))
-    log("✅ Started telegram_bot.py in background")
-except Exception as e:
-    log(f"❌ Failed to start telegram_bot.py: {e}", "ERROR")
+# Telegram bot is now managed by bot.py
+
 
 # ========== SETTINGS MANAGEMENT ==========
 MIN_ATTACK_TIME = 1
