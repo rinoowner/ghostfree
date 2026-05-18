@@ -518,7 +518,7 @@ def get_active_attacks():
         return jsonify({"success": False, "reason": str(e)}), 500
 
 if __name__ == '__main__':
-    port = 8800
+    port = int(os.environ.get("PORT", 8800))
 
     server_ip = get_server_ip()
     print("=" * 60)
