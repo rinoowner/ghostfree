@@ -369,52 +369,49 @@ def handle_attack(message):
             )
             
             # Personal Group Attack Alert to Owner
-            if user_id != OWNER_ID:
-                try:
-                    group_title = message.chat.title or "Group"
-                    group_link = f" (ID: `{message.chat.id}`)"
-                    if message.chat.username:
-                        group_link = f" (Username: @{message.chat.username})"
-                        
-                    bot.send_message(OWNER_ID,
-                        f"📢 **Group Attack Alert!**\n\n"
-                        f"👥 **Group:** `{group_title}`{group_link}\n"
-                        f"👤 **User:** `{user_id}` (@{message.from_user.username or 'N/A'})\n"
-                        f"🎯 **Target:** `{target_ip}:{target_port}`\n"
-                        f"⏱️ **Duration:** `{duration}s`\n"
-                        f"📝 **API Response:** `{res.text[:4000]}`",
-                        parse_mode="Markdown"
-                    )
-                except Exception as e:
-                    print(f"Failed to send owner alert: {e}")
-        else:
-            bot.reply_to(message, f"❌ API Error: {res.status_code}\nServer might be down.")
-            if user_id != OWNER_ID:
-                try:
-                    bot.send_message(OWNER_ID,
-                        f"🚨 **API Error Alert (Bot)**\n\n"
-                        f"👤 **User:** `{user_id}` (@{message.from_user.username or 'N/A'})\n"
-                        f"🎯 **Target:** `{target_ip}:{target_port}`\n"
-                        f"🚫 **Status:** {res.status_code}\n"
-                        f"📝 **Response:** `{res.text[:4000]}`",
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-            
-    except Exception as e:
-        bot.reply_to(message, f"❌ Failed to connect to API: {str(e)}")
-        if user_id != OWNER_ID:
             try:
+                group_title = message.chat.title or "Group"
+                group_link = f" (ID: `{message.chat.id}`)"
+                if message.chat.username:
+                    group_link = f" (Username: @{message.chat.username})"
+                    
                 bot.send_message(OWNER_ID,
-                    f"🚨 **API Connection Failed (Bot)**\n\n"
+                    f"📢 **Group Attack Alert!**\n\n"
+                    f"👥 **Group:** `{group_title}`{group_link}\n"
                     f"👤 **User:** `{user_id}` (@{message.from_user.username or 'N/A'})\n"
                     f"🎯 **Target:** `{target_ip}:{target_port}`\n"
-                    f"📝 **Error:** `{str(e)}`",
+                    f"⏱️ **Duration:** `{duration}s`\n"
+                    f"📝 **API Response:** `{res.text[:4000]}`",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                print(f"Failed to send owner alert: {e}")
+        else:
+            bot.reply_to(message, f"❌ API Error: {res.status_code}\nServer might be down.")
+            try:
+                bot.send_message(OWNER_ID,
+                    f"🚨 **API Error Alert (Bot)**\n\n"
+                    f"👤 **User:** `{user_id}` (@{message.from_user.username or 'N/A'})\n"
+                    f"🎯 **Target:** `{target_ip}:{target_port}`\n"
+                    f"🚫 **Status:** {res.status_code}\n"
+                    f"📝 **Response:** `{res.text[:4000]}`",
                     parse_mode="Markdown"
                 )
             except:
                 pass
+            
+    except Exception as e:
+        bot.reply_to(message, f"❌ Failed to connect to API: {str(e)}")
+        try:
+            bot.send_message(OWNER_ID,
+                f"🚨 **API Connection Failed (Bot)**\n\n"
+                f"👤 **User:** `{user_id}` (@{message.from_user.username or 'N/A'})\n"
+                f"🎯 **Target:** `{target_ip}:{target_port}`\n"
+                f"📝 **Error:** `{str(e)}`",
+                parse_mode="Markdown"
+            )
+        except:
+            pass
 
 # --- RULES COMMAND ---
 @bot.message_handler(commands=['rules'], func=lambda m: m.chat.type in ['group', 'supergroup'])
