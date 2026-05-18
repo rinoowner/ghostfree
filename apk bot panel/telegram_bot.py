@@ -1,4 +1,5 @@
 import telebot
+from telebot import types
 import os
 import time
 import requests
@@ -30,13 +31,34 @@ try:
     users_col = db['group_users']
     settings_col = db['group_settings']
     active_attacks_col = db['active_attacks']
+    forward_mappings_col = db['forward_mappings']
     
     # Ensure indexes
     users_col.create_index("user_id", unique=True)
+    forward_mappings_col.create_index("owner_msg_id", unique=True)
     print("✅ MongoDB connected!")
 except Exception as e:
     print(f"❌ MongoDB connection failed: {e}")
     exit(1)
+
+def is_member_of_channel(user_id):
+    channel_id = get_setting("channel_id", "Not Set")
+    if channel_id == "Not Set":
+        return True # Skip check if not set
+    try:
+        # Check if the channel_id is numeric (e.g. -1001234567890) and convert it to int
+        if str(channel_id).strip().replace('-', '').replace('+', '').isdigit():
+            channel_id = int(str(channel_id).strip())
+        elif not str(channel_id).startswith('@'):
+            channel_id = f"@{channel_id}"
+            
+        member = bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+        if member.status in ['member', 'administrator', 'creator']:
+            return True
+        return False
+    except Exception as e:
+        print(f"Private channel check failed for {user_id} using {channel_id}: {e}")
+        return True
 
 # --- Default Settings ---
 def get_setting(key, default_value):
@@ -54,16 +76,56 @@ def is_owner(user_id):
 
 # --- OWNER DM HANDLERS ---
 
+# --- DM FORWARDING & REPLY SYSTEM ---
+
+@bot.message_handler(func=lambda m: m.chat.type == 'private' and not is_owner(m.from_user.id), content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker'])
+def forward_to_owner(message):
+    try:
+        # Forward message to Owner
+        forwarded = bot.forward_message(chat_id=OWNER_ID, from_chat_id=message.chat.id, message_id=message.message_id)
+        
+        # Save mapping to MongoDB
+        forward_mappings_col.insert_one({
+            "owner_msg_id": forwarded.message_id,
+            "user_id": message.from_user.id,
+            "created_at": int(time.time())
+        })
+        
+        # Notify user that their message has been sent to the owner
+        bot.reply_to(message, "📬 **Message forwarded to the Owner successfully!** Please wait for their reply.")
+    except Exception as e:
+        print(f"Failed to forward message to owner: {e}")
+        bot.reply_to(message, "❌ Failed to forward your message. Please try again later.")
+
+@bot.message_handler(func=lambda m: m.chat.type == 'private' and is_owner(m.from_user.id) and m.reply_to_message is not None, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker'])
+def reply_to_forwarded_message(message):
+    try:
+        # Get target user from reply mapping
+        reply_to_id = message.reply_to_message.message_id
+        mapping = forward_mappings_col.find_one({"owner_msg_id": reply_to_id})
+        
+        if mapping:
+            target_user_id = mapping["user_id"]
+            # Copy owner reply back to the user
+            bot.copy_message(chat_id=target_user_id, from_chat_id=message.chat.id, message_id=message.message_id)
+            bot.reply_to(message, f"✅ **Reply sent to user** `{target_user_id}` successfully!")
+        else:
+            # Let fallback handle other owner commands
+            pass
+    except Exception as e:
+        bot.reply_to(message, f"❌ **Failed to send reply:** {str(e)}")
+
 @bot.message_handler(commands=['start', 'help'], func=lambda m: m.chat.type == 'private')
 def dm_start(message):
     if not is_owner(message.from_user.id):
-        return  # Ignore non-owners in DM
+        return  # Ignore non-owners for start/help in DM
         
     text = (
         "👑 **Owner Control Panel**\n\n"
         "**Group Setup:**\n"
         "1. Add bot to your group and send `/setgroup`\n"
-        "2. Add bot to your channel and send `/setchannel` in DM like: `/setchannel -100xxx`\n\n"
+        "2. Add bot to your channel and send `/setchannel` in DM like: `/setchannel -100xxx` or `@RINOMODSOFFICIAL`\n"
+        "3. Set channel invite link: `/setchannellink <invite_link>`\n\n"
         "**Settings Commands:**\n"
         "`/settings` - View current settings\n"
         "`/setconcurrent <num>` - Set max active attacks (default 3)\n"
@@ -79,6 +141,7 @@ def dm_start(message):
 def show_settings(message):
     group_id = get_setting("group_id", "Not Set")
     channel_id = get_setting("channel_id", "Not Set")
+    channel_link = get_setting("channel_link", "Not Set")
     concurrent = get_setting("max_concurrent", 3)
     duration = get_setting("max_duration", 60)
     cooldown = get_setting("cooldown", 100)
@@ -88,6 +151,7 @@ def show_settings(message):
         "⚙️ **Current Settings:**\n\n"
         f"👥 Group ID: `{group_id}`\n"
         f"📢 Channel ID: `{channel_id}`\n"
+        f"🔗 Channel Link: `{channel_link}`\n"
         f"⚡ Max Concurrent Attacks: `{concurrent}`\n"
         f"⏱️ Max Attack Duration: `{duration}s`\n"
         f"⏳ User Cooldown: `{cooldown}s`\n"
@@ -95,29 +159,33 @@ def show_settings(message):
     )
     bot.reply_to(message, text, parse_mode="Markdown")
 
-@bot.message_handler(commands=['setconcurrent', 'setduration', 'setcooldown', 'setbantime', 'setchannel'], func=lambda m: m.chat.type == 'private' and is_owner(m.from_user.id))
+@bot.message_handler(commands=['setconcurrent', 'setduration', 'setcooldown', 'setbantime', 'setchannel', 'setchannellink'], func=lambda m: m.chat.type == 'private' and is_owner(m.from_user.id))
 def update_settings(message):
-    cmd = message.text.split()[0].lower()
+    parts = message.text.split(maxsplit=1)
+    cmd = parts[0].lower()
     try:
-        val = message.text.split()[1]
+        val = parts[1]
         
         if cmd == "/setchannel":
             set_setting("channel_id", val) # Channel ID is string/int
-            bot.reply_to(message, f"✅ Feedback Channel set to: {val}")
+            bot.reply_to(message, f"✅ Feedback Channel set to: `{val}`", parse_mode="Markdown")
+        elif cmd == "/setchannellink":
+            set_setting("channel_link", val)
+            bot.reply_to(message, f"✅ Channel invite link set to: `{val}`", parse_mode="Markdown")
         else:
             val = int(val)
             if cmd == "/setconcurrent":
                 set_setting("max_concurrent", val)
-                bot.reply_to(message, f"✅ Max concurrent attacks set to: {val}")
+                bot.reply_to(message, f"✅ Max concurrent attacks set to: `{val}`", parse_mode="Markdown")
             elif cmd == "/setduration":
                 set_setting("max_duration", val)
-                bot.reply_to(message, f"✅ Max attack duration set to: {val}s")
+                bot.reply_to(message, f"✅ Max attack duration set to: `{val}s`", parse_mode="Markdown")
             elif cmd == "/setcooldown":
                 set_setting("cooldown", val)
-                bot.reply_to(message, f"✅ User cooldown set to: {val}s")
+                bot.reply_to(message, f"✅ User cooldown set to: `{val}s`", parse_mode="Markdown")
             elif cmd == "/setbantime":
                 set_setting("bantime", val)
-                bot.reply_to(message, f"✅ Missing feedback ban time set to: {val} mins")
+                bot.reply_to(message, f"✅ Missing feedback ban time set to: `{val} mins`", parse_mode="Markdown")
     except:
         bot.reply_to(message, f"❌ Invalid format. Use: {cmd} <value>")
 
@@ -157,6 +225,44 @@ def handle_attack(message):
         return # Ignore attacks in unauthorized groups
         
     user_id = message.from_user.id
+    
+    # Check channel join status if it is a group attack
+    if not is_member_of_channel(user_id):
+        channel_link = get_setting("channel_link", "")
+        if not channel_link:
+            channel_id = get_setting("channel_id", "")
+            if channel_id:
+                channel_link = f"https://t.me/{str(channel_id).replace('@', '').replace('-100', '')}"
+            else:
+                channel_link = "https://t.me/RINOMODSOFFICIAL"
+        
+        markup = types.InlineKeyboardMarkup()
+        btn_join = types.InlineKeyboardButton("📢 Join Channel 📢", url=channel_link)
+        markup.add(btn_join)
+        
+        warning_text = (
+            f"⚠️ **Access Denied!** ⚠️\n\n"
+            f"Hey {message.from_user.first_name}, you must join our channel to use the attack command in this group!\n\n"
+            f"👉 Click the button below to join, then try your attack again!"
+        )
+        
+        sent_warning = bot.reply_to(message, warning_text, reply_markup=markup, parse_mode="Markdown")
+        
+        # Auto-delete messages after 10 seconds to keep group clean
+        def auto_delete():
+            time.sleep(10)
+            try:
+                bot.delete_message(chat_id=message.chat.id, message_id=sent_warning.message_id)
+            except:
+                pass
+            try:
+                bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+            except:
+                pass
+        
+        threading.Thread(target=auto_delete, daemon=True).start()
+        return
+
     now = int(time.time())
     
     # Get user data
@@ -232,6 +338,7 @@ def handle_attack(message):
             active_attacks_col.insert_one({
                 "user_id": user_id,
                 "ip": target_ip,
+                "port": target_port,
                 "expires_at": now + duration
             })
             
@@ -254,11 +361,54 @@ def handle_attack(message):
                 f"⚠️ **IMPORTANT:** You MUST send a screenshot of the match as feedback in this group before your next attack, or you will be banned for {get_setting('bantime', 10)} minutes!",
                 parse_mode="Markdown"
             )
+            
+            # Personal Group Attack Alert to Owner
+            if user_id != OWNER_ID:
+                try:
+                    group_title = message.chat.title or "Group"
+                    group_link = f" (ID: `{message.chat.id}`)"
+                    if message.chat.username:
+                        group_link = f" (Username: @{message.chat.username})"
+                        
+                    bot.send_message(OWNER_ID,
+                        f"📢 **Group Attack Alert!**\n\n"
+                        f"👥 **Group:** `{group_title}`{group_link}\n"
+                        f"👤 **User:** `{user_id}` (@{message.from_user.username or 'N/A'})\n"
+                        f"🎯 **Target:** `{target_ip}:{target_port}`\n"
+                        f"⏱️ **Duration:** `{duration}s`\n"
+                        f"📝 **API Response:** `{res.text[:4000]}`",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    print(f"Failed to send owner alert: {e}")
         else:
             bot.reply_to(message, f"❌ API Error: {res.status_code}\nServer might be down.")
+            if user_id != OWNER_ID:
+                try:
+                    bot.send_message(OWNER_ID,
+                        f"🚨 **API Error Alert (Bot)**\n\n"
+                        f"👤 **User:** `{user_id}` (@{message.from_user.username or 'N/A'})\n"
+                        f"🎯 **Target:** `{target_ip}:{target_port}`\n"
+                        f"🚫 **Status:** {res.status_code}\n"
+                        f"📝 **Response:** `{res.text[:4000]}`",
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
             
     except Exception as e:
         bot.reply_to(message, f"❌ Failed to connect to API: {str(e)}")
+        if user_id != OWNER_ID:
+            try:
+                bot.send_message(OWNER_ID,
+                    f"🚨 **API Connection Failed (Bot)**\n\n"
+                    f"👤 **User:** `{user_id}` (@{message.from_user.username or 'N/A'})\n"
+                    f"🎯 **Target:** `{target_ip}:{target_port}`\n"
+                    f"📝 **Error:** `{str(e)}`",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
 
 # --- RULES COMMAND ---
 @bot.message_handler(commands=['rules'], func=lambda m: m.chat.type in ['group', 'supergroup'])
@@ -270,6 +420,62 @@ def send_rules(message):
         "Enjoy 😊"
     )
     bot.reply_to(message, rules_text, parse_mode="Markdown")
+
+def get_server_ip():
+    try:
+        res = requests.get("https://api.ipify.org?format=json", timeout=5)
+        if res.status_code == 200:
+            return res.json().get("ip", "Unknown IP")
+    except:
+        pass
+    return "Unknown IP"
+
+# --- STATUS COMMAND ---
+@bot.message_handler(commands=['status'])
+def check_status(message):
+    try:
+        now = int(time.time())
+        max_concurrent = get_setting("max_concurrent", 3)
+        
+        # Get active attacks
+        active_attacks = list(active_attacks_col.find({"expires_at": {"$gt": now}}))
+        active_count = len(active_attacks)
+        
+        # Build slot progress bar
+        squares = "🔴" * active_count
+        circles = "🟢" * max(0, max_concurrent - active_count)
+        slot_bar = f"[{squares}{circles}]"
+        
+        server_ip = get_server_ip()
+        
+        status_text = (
+            f"⚡ **GHOST FREE REAL-TIME STATUS** ⚡\n\n"
+            f"🖥️ **Server Status:** `🟢 ONLINE`\n"
+            f"📍 **Server IP:** `{server_ip}`\n"
+            f"🎰 **Concurrent Slots:** `{active_count}/{max_concurrent}` {slot_bar}\n\n"
+        )
+        
+        if active_count > 0:
+            status_text += "🚀 **Running Targets:**\n"
+            for attack in active_attacks:
+                target = attack.get("ip", "Unknown")
+                port = attack.get("port", "Unknown")
+                expiry = attack.get("expires_at", 0)
+                remaining = max(0, expiry - now)
+                
+                # Obfuscate target IP for regular users, keep for owner
+                if not is_owner(message.from_user.id):
+                    parts = target.split(".")
+                    if len(parts) == 4:
+                        target = f"{parts[0]}.***.***.{parts[3]}"
+                
+                status_text += f"🔹 `{target}:{port}` | ⏱️ `{remaining}s left`\n"
+        else:
+            status_text += "🍀 **All slots are currently free! Ready to flood.**"
+            
+        bot.reply_to(message, status_text, parse_mode="Markdown")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Failed to fetch real-time status: {str(e)}")
 
 # --- WELCOME LISTENER ---
 @bot.message_handler(content_types=['new_chat_members'], func=lambda m: m.chat.type in ['group', 'supergroup'])
