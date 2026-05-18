@@ -125,7 +125,8 @@ def dm_start(message):
         "**Group Setup:**\n"
         "1. Add bot to your group and send `/setgroup`\n"
         "2. Add bot to your channel and send `/setchannel` in DM like: `/setchannel -100xxx` or `@RINOMODSOFFICIAL`\n"
-        "3. Set channel invite link: `/setchannellink <invite_link>`\n\n"
+        "3. Set channel invite link: `/setchannellink <invite_link>`\n"
+        "4. Set dedicated feedback channel: `/setfeedbackchannel <id_or_username>`\n\n"
         "**Settings Commands:**\n"
         "`/settings` - View current settings\n"
         "`/setconcurrent <num>` - Set max active attacks (default 3)\n"
@@ -142,6 +143,7 @@ def show_settings(message):
     group_id = get_setting("group_id", "Not Set")
     channel_id = get_setting("channel_id", "Not Set")
     channel_link = get_setting("channel_link", "Not Set")
+    feedback_channel_id = get_setting("feedback_channel_id", "Not Set")
     concurrent = get_setting("max_concurrent", 3)
     duration = get_setting("max_duration", 60)
     cooldown = get_setting("cooldown", 100)
@@ -150,8 +152,9 @@ def show_settings(message):
     text = (
         "⚙️ **Current Settings:**\n\n"
         f"👥 Group ID: `{group_id}`\n"
-        f"📢 Channel ID: `{channel_id}`\n"
-        f"🔗 Channel Link: `{channel_link}`\n"
+        f"📢 Join Channel ID: `{channel_id}`\n"
+        f"🔗 Join Channel Link: `{channel_link}`\n"
+        f"📸 Feedback Channel ID: `{feedback_channel_id}`\n"
         f"⚡ Max Concurrent Attacks: `{concurrent}`\n"
         f"⏱️ Max Attack Duration: `{duration}s`\n"
         f"⏳ User Cooldown: `{cooldown}s`\n"
@@ -159,7 +162,7 @@ def show_settings(message):
     )
     bot.reply_to(message, text, parse_mode="Markdown")
 
-@bot.message_handler(commands=['setconcurrent', 'setduration', 'setcooldown', 'setbantime', 'setchannel', 'setchannellink'], func=lambda m: m.chat.type == 'private' and is_owner(m.from_user.id))
+@bot.message_handler(commands=['setconcurrent', 'setduration', 'setcooldown', 'setbantime', 'setchannel', 'setchannellink', 'setfeedbackchannel'], func=lambda m: m.chat.type == 'private' and is_owner(m.from_user.id))
 def update_settings(message):
     parts = message.text.split(maxsplit=1)
     cmd = parts[0].lower()
@@ -168,10 +171,13 @@ def update_settings(message):
         
         if cmd == "/setchannel":
             set_setting("channel_id", val) # Channel ID is string/int
-            bot.reply_to(message, f"✅ Feedback Channel set to: `{val}`", parse_mode="Markdown")
+            bot.reply_to(message, f"✅ Join Channel set to: `{val}`", parse_mode="Markdown")
         elif cmd == "/setchannellink":
             set_setting("channel_link", val)
             bot.reply_to(message, f"✅ Channel invite link set to: `{val}`", parse_mode="Markdown")
+        elif cmd == "/setfeedbackchannel":
+            set_setting("feedback_channel_id", val)
+            bot.reply_to(message, f"✅ Feedback Channel set to: `{val}`", parse_mode="Markdown")
         else:
             val = int(val)
             if cmd == "/setconcurrent":
@@ -519,16 +525,25 @@ def handle_feedback(message):
         
         bot.reply_to(message, "✅ Feedback accepted! You can now use `/attack` again when your cooldown is over.")
         
-        # Forward to owner channel
-        channel_id = get_setting("channel_id", None)
-        if channel_id:
+        # Forward to feedback channel (dedicated feedback channel has priority, fallback to join channel)
+        feedback_target = get_setting("feedback_channel_id", None)
+        if not feedback_target or feedback_target == "Not Set":
+            feedback_target = get_setting("channel_id", None)
+            
+        if feedback_target and feedback_target != "Not Set":
             try:
-                caption = f"Feedback from @{message.from_user.username or message.from_user.first_name} (ID: `{user_id}`)"
+                # Convert numeric string to integer for telegram api compatibility
+                if str(feedback_target).strip().replace('-', '').replace('+', '').isdigit():
+                    feedback_target = int(str(feedback_target).strip())
+                elif not str(feedback_target).startswith('@'):
+                    feedback_target = f"@{feedback_target}"
+                    
+                caption = f"📢 **New Attack Feedback!**\n\n👤 **User:** @{message.from_user.username or message.from_user.first_name} (ID: `{user_id}`)"
                 if message.caption:
-                    caption += f"\n\nCaption: {message.caption}"
-                bot.send_photo(channel_id, message.photo[-1].file_id, caption=caption, parse_mode="Markdown")
+                    caption += f"\n\n📝 **Caption:** {message.caption}"
+                bot.send_photo(feedback_target, message.photo[-1].file_id, caption=caption, parse_mode="Markdown")
             except Exception as e:
-                print(f"Failed to forward feedback to channel: {e}")
+                print(f"Failed to forward feedback to channel {feedback_target}: {e}")
 
 # Cleanup old active attacks periodically
 def cleanup_task():
